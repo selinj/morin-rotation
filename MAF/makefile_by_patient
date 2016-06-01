@@ -1,0 +1,61 @@
+#BYSAMPLE_DIR=by-sample
+PROJ_DIR=/extscratch/morinlab/projects/1605_dlbcl_exomes_realigment
+BYPATIENT_DIR=by-patient
+LOG_DIR=logs
+PYTHON=/extscratch/morinlab/software/anaconda/2.3.0/envs/augment_maf/bin/python
+AUGMENT_MAF=/extscratch/morinlab/software/lab_scripts/11.2/augment_maf/augment_maf.py
+REF=/extscratch/morinlab/reference/igenomes/Homo_sapiens/GSC/GRCh38/Sequence/WholeGenomeFasta/genome.fa
+RP_RUNID=2016-05-20_11-57-05
+STR_RUNID=2016-05-27_16-34-43
+
+SAMPLES := $(shell awk '{print $$1}' ../strelka_pipeline/samples.tsv | grep -v ^\# | sed ':a;N;$$!ba;s/\n/ /g' )
+
+all: $(patsubst %, $(BYPATIENT_DIR)/%.aug.maf, $(SAMPLES))
+
+RUNSCRIPT=echo "`date`: starting $(notdir $^)"; \
+	mkdir -p $(dir $@); \
+	mkdir -p $(LOG_DIR); \
+	qsub -V -sync yes -cwd -S /bin/sh -N x$(notdir $^) \
+		 -o $(LOG_DIR)/$(notdir $^).stdout \
+		 -e $(LOG_DIR)/$(notdir $^).stderr \
+		 -pe ncpus $(NCPUS) \
+		 -l h_vmem=$(MEM) -l mem_token=$(MEM) -l mem_free=$(MEM) $^ && \
+	echo "`date`: finished $(notdir $^)"
+
+NCPUS := 1
+MEM := 1G
+
+# Run augment_maf on a per-patient basis - one MAF file per sample
+# augmented with counts for variants called in any sample of that patient
+
+$(BYPATIENT_DIR)/%.aug.maf: $(BYPATIENT_DIR)/%.sh
+	$(RUNSCRIPT)
+
+$(BYPATIENT_DIR)/%.sh:
+	mkdir -p $(dir $@)
+	$(eval SAMPLE := $*)
+	$(eval PATIENT := $(shell echo $* | cut -d'_' -f1))
+	$(eval NORMAL := $(wildcard $(PROJ_DIR)/realignment_pipeline/$(RP_RUNID)/$(PATIENT)_N_realignment_pipeline_linear/outputs/9-bamutil_clipoverlap/*.bam))
+	$(eval TUMOUR := $(wildcard $(PROJ_DIR)/realignment_pipeline/$(RP_RUNID)/$(SAMPLE)_realignment_pipeline_linear/outputs/9-bamutil_clipoverlap/*.bam))
+	echo $(PYTHON) $(AUGMENT_MAF) \
+	-n $(NORMAL) \
+	-t $(TUMOUR) \
+	$(addprefix -m , $(wildcard $(PROJ_DIR)/strelka_pipeline/$(STR_RUNID)/$(PATIENT)_*_strelka_pipeline/outputs/2-vcf2maf/*.maf)) \
+	$(REF) $(patsubst %.sh, %.aug.maf, $@) | sort -k5,5 -k6,6 -k7,7 > $@
+
+# Run augment_maf on a per-sample basis - one MAF file per sample
+# augmented with counts for all variants called in that sample
+# $(BYSAMPLE_DIR)/%.aug.maf: $(BYSAMPLE_DIR)/%.sh
+# 	$(RUNSCRIPT)
+
+# $(BYSAMPLE_DIR)/%.sh: $(MAF_DIR)/%
+# 	mkdir -p $(dir $@)
+# 	$(eval SAMPLE := $(shell echo $(basename $@) | rev | cut -d '/' -f 1-2 | rev))
+# 	echo ./augment_maf.py \
+# 	$(addprefix -n , $(wildcard $(BAM_DIR)/$(SAMPLE)/normal/*.bam)) \
+# 	$(addprefix -t , $(wildcard $(BAM_DIR)/$(SAMPLE)/tumour/*.bam)) \
+# 	$(addprefix -m , $(wildcard $^/*.maf)) \
+# 	$(REF) $(patsubst %.sh, %.maf, $@) > $@
+
+clean:
+	rm $(BYPATIENT_DIR)/*
